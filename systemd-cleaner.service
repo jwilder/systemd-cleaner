@@ -1,0 +1,10 @@
+[Unit]
+Description=Systemd leaked transient mount cleaner
+After=kube-master-configuration.service
+[Service]
+Restart=always
+RestartSec=10
+ExecStartPre=/bin/chmod 544 /usr/local/bin/systemd-cleaner
+ExecStart=/usr/local/bin/systemd-cleaner -check-interval 20m
+[Install]
+WantedBy=kubernetes.target
