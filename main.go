@@ -19,7 +19,6 @@ const sessionRoot = "/run/systemd/system"
 var (
 	verbose bool
 	checkInterval time.Duration
-	dirsTotal, dirsRemoved, unitsTotal, unitsStopped int
 	debug *log.Logger = log.New(ioutil.Discard, "", log.LstdFlags)
 	info *log.Logger = log.New(os.Stdout, "", log.LstdFlags)
 )
@@ -37,21 +36,27 @@ func main() {
 	t := time.NewTicker(checkInterval)
 	defer t.Stop()
 
-	cleanup()
+	if err := cleanup(); err != nil {
+		info.Println(err.Error())
+	}
 
 	for {
 		<-t.C
-		cleanup()
+		if err := cleanup(); err != nil {
+			info.Println(err.Error())
+		}
 	}
 }
 
-func cleanup() {
+func cleanup() error {
+	var dirsTotal, dirsRemoved, unitsTotal, unitsStopped int
+
 	info.Println("Starting cleanup...")
 	// The leaked resources are located in the systemd runtime dir.  First get the list.  This should
 	// be a few hundred, but lots of leaked resources can be 10's of thousands.
 	dirs, err := ioutil.ReadDir(sessionRoot)
 	if err != nil {
-		info.Fatal(err)
+		return err
 	}
 	defer func() {
 		info.Printf("Cleaned %d dirs out of %d, %d units out of %d\n", dirsRemoved, dirsTotal, unitsStopped, unitsTotal)
@@ -72,12 +77,13 @@ func cleanup() {
 			if _, ok := pods[pod]; !ok {
 				debug.Println(f.Name(), "is not in use. Removing.")
 				if err := os.RemoveAll(filepath.Join(sessionRoot, f.Name())); err != nil {
-					info.Fatal(err)
+					info.Println(err)
+					continue
 				}
 				dirsRemoved++
 			}
 		} else if err != nil {
-			info.Fatal(err)
+			info.Print(err.Error())
 		}
 	}
 	// Now we need to remove the leaked units that are still loaded by systemd.  We do this by get a list
@@ -100,18 +106,21 @@ func cleanup() {
 			if _, err := os.Stat(filepath.Join(sessionRoot, fmt.Sprintf("%s.d", id))); err != nil && os.IsNotExist(err) {
 				debug.Println("Stopping unit ", id)
 				stopUnit(id)
+				unitsStopped++
 			}
 
 		} else if err != nil {
-			info.Fatal(err)
+			info.Println(err.Error())
 		}
 	}
+	return nil
 }
 
 func readPods() map[string]struct{} {
 	dirs, err := ioutil.ReadDir("/var/lib/kubelet/pods/")
 	if err != nil {
-		info.Fatal(err)
+		info.Println(err)
+		return nil
 	}
 
 	pods := make(map[string]struct{}, len(dirs))
@@ -124,12 +133,14 @@ func readPods() map[string]struct{} {
 func determinePod(name string) string {
 	b, err := ioutil.ReadFile(filepath.Join(sessionRoot, name, "50-Description.conf"))
 	if err != nil {
-		info.Fatal(err)
+		info.Println(err.Error())
+		return ""
 	}
 
 	r, err := regexp.Compile("/var/lib/kubelet/pods/([^/]+)/")
 	if err != nil {
-		info.Fatal(err)
+		info.Println(err.Error())
+		return ""
 	}
 	matches := r.FindSubmatch(b)
 	if len(matches) == 2 {
@@ -144,7 +155,8 @@ func listUnits() []string {
 	cmd := exec.Command("systemctl",  "list-units")
 	cmd.Stdout = &b
 	if err := cmd.Run(); err != nil {
-		log.Fatal(err)
+		log.Print(err.Error())
+		return nil
 	}
 	return strings.Split(b.String(), "\n")
 }
@@ -153,6 +165,6 @@ func listUnits() []string {
 func stopUnit(id string) {
 	cmd := exec.Command("systemctl",  "stop", id)
 	if err := cmd.Run(); err != nil {
-		info.Fatal(err)
+		info.Println(err.Error())
 	}
 }
